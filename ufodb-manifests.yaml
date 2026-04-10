@@ -1,0 +1,266 @@
+---
+# Namespace para isolamento do projeto Ufology
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ufology
+  labels:
+    app: ufology-investigation-unit
+
+---
+# Deployment do PostgreSQL customizado
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ufodb
+  namespace: ufology
+  labels:
+    app: ufodb
+    component: database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ufodb
+  template:
+    metadata:
+      labels:
+        app: ufodb
+        component: database
+    spec:
+      containers:
+      - name: postgres
+        image: leogloriainfnet/ufodb:1.0-win
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5432
+          name: postgres
+          protocol: TCP
+        env:
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_PASSWORD
+          value: "devops2025!"
+        - name: POSTGRES_DB
+          value: ufology
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U postgres
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U postgres
+          initialDelaySeconds: 10
+          periodSeconds: 5
+
+---
+# Service para expor o banco de dados internamente no cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: ufodb-service
+  namespace: ufology
+  labels:
+    app: ufodb
+    component: database
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5432
+    targetPort: 5432
+    protocol: TCP
+    name: postgres
+  selector:
+    app: ufodb
+
+---
+# Deployment do Redis (cache em memória)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ufocache
+  namespace: ufology
+  labels:
+    app: ufocache
+    component: cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ufocache
+  template:
+    metadata:
+      labels:
+        app: ufocache
+        component: cache
+    spec:
+      containers:
+      - name: redis
+        image: redis:alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 6379
+          name: redis
+          protocol: TCP
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "250m"
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# Service para expor o Redis internamente no cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: ufocache-service
+  namespace: ufology
+  labels:
+    app: ufocache
+    component: cache
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6379
+    targetPort: 6379
+    protocol: TCP
+    name: redis
+  selector:
+    app: ufocache
+
+---
+# ConfigMap com o nome do banco de dados (Missão 4)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: ufology
+data:
+  DB_NAME: ufology
+
+---
+# Secret com a senha do banco de dados (Missão 4)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-secret
+  namespace: ufology
+type: Opaque
+stringData:
+  DB_PASSWORD: "devops2025!"
+
+---
+# Deployment da aplicação ufoTracker (Missão 4)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ufotracker
+  namespace: ufology
+  labels:
+    app: ufotracker
+    component: app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ufotracker
+  template:
+    metadata:
+      labels:
+        app: ufotracker
+        component: app
+    spec:
+      containers:
+      - name: ufotracker
+        image: infnetfernando/ufotracker:1.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        env:
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: DB_NAME
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: DB_PASSWORD
+        - name: POSTGRES_USERNAME
+          value: postgres
+        - name: DB_HOST
+          value: ufodb-service
+        - name: REDIS_HOST
+          value: ufocache-service
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+
+---
+# Service para a aplicação ufoTracker (Missão 4)
+apiVersion: v1
+kind: Service
+metadata:
+  name: ufotracker-service
+  namespace: ufology
+  labels:
+    app: ufotracker
+    component: app
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: ufotracker
